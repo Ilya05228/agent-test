@@ -4,37 +4,55 @@
     "metatools-pro-ts": {
       "type": "stdio",
       "command": "node",
-      "args": ["/home/ilya/projects/Ilya05228/agent-test/.omp/tools/dist/server.js"],
+      "args": [
+        "/home/ilya/projects/Ilya05228/agent-test/.omp/tools/dist/server.js"
+      ],
       "servers": {
         "git": {
           "command": "uvx",
-          "args": ["mcp-server-git"]
+          "args": [
+            "mcp-server-git"
+          ]
         },
         "sequential-thinking": {
           "command": "npx",
-          "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+          "args": [
+            "-y",
+            "@modelcontextprotocol/server-sequential-thinking"
+          ]
         },
         "time": {
           "command": "uvx",
-          "args": ["mcp-server-time"]
+          "args": [
+            "mcp-server-time"
+          ]
         },
         "context7": {
           "command": "npx",
-          "args": ["-y", "@upstash/context7-mcp@2.1.0"],
+          "args": [
+            "-y",
+            "@upstash/context7-mcp@2.1.0"
+          ],
           "env": {
             "CONTEXT7_API_KEY": "${env:CONTEXT7_API_KEY}"
           }
         },
         "duckduckgo": {
           "command": "npx",
-          "args": ["-y", "duckduckgo-mcp-server"]
+          "args": [
+            "-y",
+            "duckduckgo-mcp-server"
+          ]
         },
         "grep": {
           "url": "https://mcp.grep.app"
         },
         "playwright": {
           "command": "npx",
-          "args": ["-y", "@playwright/mcp@latest"]
+          "args": [
+            "-y",
+            "@playwright/mcp@latest"
+          ]
         },
         "serena": {
           "command": "serena",
@@ -45,13 +63,6 @@
             "${workspaceFolder}"
           ]
         },
-        "metatools-pro": {
-          "command": "/home/ilya/projects/Ilya05228/agent-test/.venv/bin/python3",
-          "args": ["/home/ilya/projects/Ilya05228/agent-test/main.py", "--stdio"],
-          "env": {
-            "DEEPSEEK_API_KEY": "DEEPSEEK_API_KEY"
-          }
-        }
       }
     }
   }
