@@ -1,29 +1,27 @@
 import asyncio
+import inspect
 import json
+import concurrent.futures
+import os
 import secrets
 import string
+import sys
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, get_type_hints
 
+import httpx
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from openai import AsyncOpenAI
-import httpx
 from zoneinfo import ZoneInfo
 
 load_dotenv()
-import os
 
 # Убираем socks-прокси, который ломает httpx
 for _key in ("ALL_PROXY", "all_proxy", "FTP_PROXY", "ftp_proxy"):
     os.environ.pop(_key, None)
 
-
-
-mcp = FastMCP(
-    name="MetaTools Pro",
-    version="1.2.0",
-)
+mcp = FastMCP(name="MetaTools Pro", version="1.2.0")
 
 # ====================== DeepSeek client ======================
 
@@ -33,24 +31,61 @@ deepseek = AsyncOpenAI(
     http_client=httpx.AsyncClient(proxy=None, trust_env=False),
 )
 
-# ====================== 10 РЕАЛЬНЫХ ИНСТРУМЕНТОВ ======================
+# ====================== ВНУТРЕННИЙ РЕЕСТР ИНСТРУМЕНТОВ ======================
+# Эти инструменты НЕ видны в tools/list. Доступны только через search_tools → run_tool.
+
+_internal_tools: Dict[str, Dict[str, Any]] = {}
+
+_TYPE_MAP = {int: "integer", float: "number", str: "string", bool: "boolean", dict: "object", list: "array"}
 
 
-@mcp.tool
+def _register(name: str, description: str):
+    """Декоратор: регистрирует функцию во внутреннем реестре, извлекает схему из type hints."""
+
+    def deco(fn: Callable):
+        hints = get_type_hints(fn)
+        props = {}
+        required = []
+        sig = inspect.signature(fn)
+        for pname, param in sig.parameters.items():
+            if pname == "return":
+                continue
+            pt = hints.get(pname)
+            json_type = _TYPE_MAP.get(pt, "string") if pt else "string"
+            props[pname] = {"type": json_type}
+            if param.default is inspect.Parameter.empty:
+                required.append(pname)
+
+        _internal_tools[name] = {
+            "name": name,
+            "description": description,
+            "fn": fn,
+            "parameters": {
+                "type": "object",
+                "properties": props,
+                "required": required,
+            },
+        }
+        return fn
+
+    return deco
+
+
+# ── 10 рабочих инструментов ──
+
+
+@_register("add", "Складывает два числа")
 def add(a: int, b: int) -> int:
-    """Складывает два числа"""
     return a + b
 
 
-@mcp.tool
+@_register("multiply", "Умножает два числа")
 def multiply(a: int, b: int) -> int:
-    """Умножает два числа"""
     return a * b
 
 
-@mcp.tool
+@_register("get_weather", "Возвращает погоду (симуляция)")
 def get_weather(city: str) -> Dict:
-    """Возвращает погоду (симуляция)"""
     return {
         "city": city,
         "temp": 18,
@@ -60,18 +95,16 @@ def get_weather(city: str) -> Dict:
     }
 
 
-@mcp.tool
+@_register("search_web", "Поиск в интернете (симуляция)")
 def search_web(query: str, max_results: int = 5) -> List[Dict]:
-    """Поиск в интернете (симуляция)"""
     return [
         {"title": f"Результат 1 по {query}", "url": "https://example.com/1", "snippet": "Описание..."},
         {"title": f"Результат 2 по {query}", "url": "https://example.com/2", "snippet": "Описание..."},
     ][:max_results]
 
 
-@mcp.tool
+@_register("calculate_discount", "Расчёт цены со скидкой")
 def calculate_discount(price: float, discount_percent: float) -> Dict:
-    """Расчёт цены со скидкой"""
     discounted = round(price * (1 - discount_percent / 100), 2)
     return {
         "original_price": price,
@@ -81,39 +114,34 @@ def calculate_discount(price: float, discount_percent: float) -> Dict:
     }
 
 
-@mcp.tool
+@_register("generate_password", "Генерация надёжного пароля")
 def generate_password(length: int = 16, include_symbols: bool = True) -> str:
-    """Генерация надёжного пароля"""
     chars = string.ascii_letters + string.digits
     if include_symbols:
         chars += "!@#$%^&*()_+-="
     return "".join(secrets.choice(chars) for _ in range(length))
 
 
-@mcp.tool
+@_register("get_current_time", "Текущее время")
 def get_current_time(timezone: str = "UTC") -> str:
-    """Текущее время"""
     now = datetime.now(ZoneInfo(timezone))
     return now.strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
-@mcp.tool
+@_register("summarize_text", "Краткое изложение текста")
 def summarize_text(text: str, max_length: int = 200) -> str:
-    """Краткое изложение текста"""
     if len(text) <= max_length:
         return text
     return text[:max_length].rsplit(" ", 1)[0] + "..."
 
 
-@mcp.tool
+@_register("translate_text", "Перевод текста (симуляция)")
 def translate_text(text: str, target_lang: str = "en") -> str:
-    """Перевод текста (симуляция)"""
     return f"[Перевод на {target_lang.upper()}]: {text}"
 
 
-@mcp.tool
+@_register("analyze_sentiment", "Анализ тональности")
 def analyze_sentiment(text: str) -> Dict:
-    """Анализ тональности"""
     text_lower = text.lower()
     if any(word in text_lower for word in ["отлично", "супер", "хорошо", "замечательно"]):
         score = 0.85
@@ -127,10 +155,7 @@ def analyze_sentiment(text: str) -> Dict:
     return {"label": label, "score": score}
 
 
-# ====================== DEEPSEEK AI TOOL ======================
-
-
-@mcp.tool
+@_register("chat_with_deepseek", "Отправляет запрос к DeepSeek API и возвращает ответ")
 async def chat_with_deepseek(
     prompt: str,
     system_prompt: str = "Ты полезный AI-ассистент. Отвечай кратко и по делу.",
@@ -138,10 +163,6 @@ async def chat_with_deepseek(
     max_tokens: int = 1024,
     model: str = "deepseek-chat",
 ) -> Dict:
-    """
-    Отправляет запрос к DeepSeek API и возвращает ответ.
-    Требует DEEPSEEK_API_KEY в .env файле.
-    """
     try:
         response = await deepseek.chat.completions.create(
             model=model,
@@ -165,75 +186,70 @@ async def chat_with_deepseek(
             },
         }
     except Exception as e:
-        return {
-            "status": "error",
-            "model": model,
-            "prompt": prompt,
-            "error": str(e),
-        }
+        return {"status": "error", "model": model, "prompt": prompt, "error": str(e)}
 
 
-# ====================== МЕТА-ИНСТРУМЕНТЫ ======================
+# ====================== МЕТА-ИНСТРУМЕНТЫ (только они видны в MCP) ======================
+
+
+def _format_tool_info(name: str, info: dict) -> dict:
+    return {
+        "name": info["name"],
+        "description": info["description"],
+        "parameters": info["parameters"],
+    }
 
 
 @mcp.tool
-async def search_tools(query: str = "", limit: int = 20) -> List[Dict]:
+def search_tools(query: str = "", limit: int = 20) -> List[Dict]:
     """
     Поиск инструментов по названию или описанию.
-    Очень полезен для Claude Desktop.
+    Возвращает название, описание и схему параметров для каждого найденного инструмента.
     """
-    tools = await mcp.list_tools()
+    q = query.lower().strip()
     results = []
-
-    query = query.lower().strip()
-
-    for tool in tools:
-        name_match = query in tool.name.lower()
-        desc_match = query in (tool.description or "").lower()
-
-        if not query or name_match or desc_match:
-            results.append(
-                {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                    "is_meta": tool.name in ["search_tools", "run_tool"],
-                }
-            )
+    for name, info in _internal_tools.items():
+        if not q or q in name.lower() or q in (info["description"] or "").lower():
+            results.append(_format_tool_info(name, info))
             if len(results) >= limit:
                 break
-
     return results
 
 
 @mcp.tool
-async def run_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
+def run_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
     """
     Универсальный запуск любого инструмента по имени.
-    Удобно использовать из Claude Desktop.
+    Предварительно используй search_tools чтобы узнать какие инструменты есть и какие у них параметры.
     """
-    try:
-        tool = await mcp.get_tool(tool_name)
-        if not tool:
-            available = [t.name for t in await mcp.list_tools()]
-            return {
-                "error": f"Инструмент '{tool_name}' не найден",
-                "available_tools": available[:15],
-            }
-
-        result = await mcp.call_tool(tool_name, arguments)
-        sc = result.structured_content
-        value = sc["result"] if isinstance(sc, dict) and "result" in sc else sc
+    info = _internal_tools.get(tool_name)
+    if info is None:
+        available = list(_internal_tools.keys())
         return {
-            "tool": tool_name,
-            "input": arguments,
-            "result": value,
-            "status": "success",
+            "error": f"Инструмент '{tool_name}' не найден",
+            "available_tools": available[:15],
         }
 
+    try:
+        fn = info["fn"]
+        if asyncio.iscoroutinefunction(fn):
+            # Если мы внутри event loop — нельзя asyncio.run()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop is None:
+                result = asyncio.run(fn(**arguments))
+            else:
+                # Мы внутри event loop (например, тест), создаём задачу и ждём
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    result = pool.submit(asyncio.run, fn(**arguments)).result()
+        else:
+            result = fn(**arguments)
+        return {"tool": tool_name, "input": arguments, "result": result, "status": "success"}
     except Exception as e:
         return {"tool": tool_name, "status": "error", "error": str(e)}
-
 
 # ====================== ТЕСТ-РАННЕР ======================
 
@@ -244,9 +260,9 @@ async def run_all_tests():
     sep = "=" * 60
     print(f"\n{sep}")
     print("  🧪 MetaTools Pro — ТЕСТ МЕТА-ИНСТРУМЕНТОВ")
+    print(f"  Всего в реестре: {len(_internal_tools)} инструментов")
+    print(f"  В MCP видны:     search_tools, run_tool")
     print(f"{sep}\n")
-
-    # ── Сценарий: пользователь ищет инструменты и запускает их ──
 
     scenarios = [
         {
@@ -295,12 +311,9 @@ async def run_all_tests():
         print(f"│")
 
         # Шаг 1: search_tools
-        print(f"│  1. search_tools(\"{s['search_query']}\")")
+        print(f'│  1. search_tools("{s["search_query"]}")')
         try:
-            sr = await mcp.call_tool("search_tools", {"query": s["search_query"]})
-            found = sr.structured_content
-            if isinstance(found, dict) and "result" in found:
-                found = found["result"]
+            found = search_tools(query=s["search_query"])
             if isinstance(found, list):
                 names = [t["name"] for t in found]
                 print(f"│     Найдено: {', '.join(names)}")
@@ -313,16 +326,10 @@ async def run_all_tests():
             continue
 
         # Шаг 2: run_tool
-        print(f"│  2. run_tool(\"{s['run_tool']}\", {json.dumps(s['run_args'], ensure_ascii=False)})")
+        print(f'│  2. run_tool("{s["run_tool"]}", {json.dumps(s["run_args"], ensure_ascii=False)})')
         try:
-            rr = await mcp.call_tool("run_tool", {
-                "tool_name": s["run_tool"],
-                "arguments": s["run_args"],
-            })
-            sc = rr.structured_content
-            value = sc["result"] if isinstance(sc, dict) and "result" in sc else sc
-            output = json.dumps(value, indent=6, ensure_ascii=False)
-            # Indent the output under the tree
+            result = run_tool(tool_name=s["run_tool"], arguments=s["run_args"])
+            output = json.dumps(result, indent=6, ensure_ascii=False)
             for line in output.split("\n"):
                 print(f"│     {line}")
             passed += 1
@@ -335,24 +342,22 @@ async def run_all_tests():
     print(f"{sep}")
     print(f"  Результаты: {passed} ✓ успешно, {failed} ✗ ошибок, всего {len(scenarios)}")
     print(f"{sep}\n")
+
+
 # ====================== ТОЧКА ВХОДА ======================
 
-
 if __name__ == "__main__":
-    import sys
-
     if "--test" in sys.argv:
         asyncio.run(run_all_tests())
     elif "--stdio" in sys.argv:
-        # Для подключения через OMP / Claude Desktop (stdio transport)
         mcp.run(transport="stdio", show_banner=False)
     else:
         print("🚀 MetaTools Pro MCP Server запущен")
-        tools = asyncio.run(mcp.list_tools())
-        print(f"Всего инструментов: {len(tools)}")
-        for t in tools:
-            print(f"  • {t.name}")
-        print("Готов к подключению в Claude Desktop...")
-        print("  Запусти с --test для мини-теста всех инструментов")
-        print("  Запусти с --stdio для OMP/Claude Desktop (stdio mode)")
+        print(f"Инструментов в реестре: {len(_internal_tools)}")
+        print(f"  • search_tools (MCP)")
+        print(f"  • run_tool (MCP)")
+        print(f"  + {len(_internal_tools)} динамических (через search/run)")
+        print("Готов к подключению...")
+        print("  --test  для мини-теста")
+        print("  --stdio для OMP/Claude Desktop")
         mcp.run(transport="sse", port=8000, host="127.0.0.1")
