@@ -1,419 +1,358 @@
-"""
-MCP Meta-Server: 10 example tools + tool search + dynamic execute + DeepSeek orchestration.
-
-Usage:
-  # 1. Copy .env.example -> .env and set your key:
-  cp .env.example .env
-  # 2. Run with uv:
-  uv run main.py
-"""
-
-from __future__ import annotations
-
 import asyncio
 import json
-import math
-import os
-import re
-import time
-from datetime import datetime, timezone
-from typing import Any
+import secrets
+import string
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-import httpx
-import logging
-from mcp.server.fastmcp import FastMCP
 from dotenv import load_dotenv
+from fastmcp import FastMCP
+from openai import AsyncOpenAI
+import httpx
+from zoneinfo import ZoneInfo
+
 load_dotenv()
+import os
 
-logging.getLogger("httpx").setLevel(logging.WARNING)
-# ---------------------------------------------------------------------------
-# Server
-# ---------------------------------------------------------------------------
-
-mcp = FastMCP("meta-server")
+# Убираем socks-прокси, который ломает httpx
+for _key in ("ALL_PROXY", "all_proxy", "FTP_PROXY", "ftp_proxy"):
+    os.environ.pop(_key, None)
 
 
-# ---------------------------------------------------------------------------
-# Helper: get tool registry as a list of dicts
-# ---------------------------------------------------------------------------
 
-def _tool_list() -> list[dict[str, Any]]:
-    """Return all registered tools with metadata."""
-    tools = mcp._tool_manager.list_tools()  # type: ignore[attr-defined]
-    result = []
-    for t in tools:
-        result.append({
-            "name": t.name,
-            "description": t.description,
-            "input_schema": t.parameters,  # JSON Schema
-        })
-    return result
+mcp = FastMCP(
+    name="MetaTools Pro",
+    version="1.2.0",
+)
 
+# ====================== DeepSeek client ======================
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 10 basic tools
-# ═══════════════════════════════════════════════════════════════════════════
+deepseek = AsyncOpenAI(
+    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    base_url="https://api.deepseek.com",
+    http_client=httpx.AsyncClient(proxy=None, trust_env=False),
+)
+
+# ====================== 10 РЕАЛЬНЫХ ИНСТРУМЕНТОВ ======================
 
 
-@mcp.tool()
-def add(a: float, b: float) -> float:
-    """Add two numbers."""
+@mcp.tool
+def add(a: int, b: int) -> int:
+    """Складывает два числа"""
     return a + b
 
 
-@mcp.tool()
-def multiply(a: float, b: float) -> float:
-    """Multiply two numbers."""
+@mcp.tool
+def multiply(a: int, b: int) -> int:
+    """Умножает два числа"""
     return a * b
 
 
-@mcp.tool()
-def reverse_string(text: str) -> str:
-    """Reverse a string."""
-    return text[::-1]
+@mcp.tool
+def get_weather(city: str) -> Dict:
+    """Возвращает погоду (симуляция)"""
+    return {
+        "city": city,
+        "temp": 18,
+        "condition": "ясно",
+        "humidity": 45,
+        "timestamp": datetime.now().isoformat(),
+    }
 
 
-@mcp.tool()
-def word_count(text: str) -> int:
-    """Count the number of words in a text."""
-    return len(text.split())
-
-
-@mcp.tool()
-def current_time() -> str:
-    """Return the current UTC timestamp."""
-    return datetime.now(timezone.utc).isoformat()
-
-
-@mcp.tool()
-def to_uppercase(text: str) -> str:
-    """Convert text to uppercase."""
-    return text.upper()
-
-
-@mcp.tool()
-def to_lowercase(text: str) -> str:
-    """Convert text to lowercase."""
-    return text.lower()
-
-
-@mcp.tool()
-def calculate(expression: str) -> float:
-    """Evaluate a mathematical expression (e.g. '2 + 3 * 4')."""
-    # Safe eval — only allow numeric operators and math functions
-    allowed = re.compile(r'^[\d\s+\-*/().,%sqrtpi**e]+$', re.IGNORECASE)
-    if not allowed.match(expression.strip()):
-        raise ValueError(f"Expression contains disallowed characters: {expression!r}")
-    try:
-        # Provide math constants for convenience
-        result = eval(expression, {"__builtins__": {}}, math.__dict__)  # noqa: S307
-        return float(result)
-    except Exception as exc:
-        raise ValueError(f"Cannot evaluate {expression!r}: {exc}") from exc
-
-
-@mcp.tool()
-def split_string(text: str, delimiter: str = " ") -> list[str]:
-    """Split a string by a delimiter."""
-    return text.split(delimiter)
-
-
-@mcp.tool()
-def join_strings(parts: list[str], delimiter: str = " ") -> str:
-    """Join a list of strings with a delimiter."""
-    return delimiter.join(parts)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Meta-tools: tool introspection & dynamic execution
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-@mcp.tool()
-def search_tools(query: str = "") -> list[dict[str, Any]]:
-    """Search registered tools by name/description.
-
-    Returns full metadata (name, description, input_schema) for every
-    matching tool.  Empty query returns ALL tools.
-    """
-    q = query.strip().lower()
-    tools = _tool_list()
-    if not q:
-        return tools
+@mcp.tool
+def search_web(query: str, max_results: int = 5) -> List[Dict]:
+    """Поиск в интернете (симуляция)"""
     return [
-        t
-        for t in tools
-        if q in t["name"].lower() or q in (t["description"] or "").lower()
-    ]
+        {"title": f"Результат 1 по {query}", "url": "https://example.com/1", "snippet": "Описание..."},
+        {"title": f"Результат 2 по {query}", "url": "https://example.com/2", "snippet": "Описание..."},
+    ][:max_results]
 
 
-@mcp.tool()
-async def execute_tool(
-    name: str,
-    arguments: str,
-) -> str:
-    """Dynamically call any registered tool by name.
+@mcp.tool
+def calculate_discount(price: float, discount_percent: float) -> Dict:
+    """Расчёт цены со скидкой"""
+    discounted = round(price * (1 - discount_percent / 100), 2)
+    return {
+        "original_price": price,
+        "discount_percent": discount_percent,
+        "final_price": discounted,
+        "saved": round(price - discounted, 2),
+    }
 
-    Parameters
-    ----------
-    name : str
-        The tool name (e.g. 'add', 'reverse_string', 'multiply', …).
-    arguments : str
-        JSON-encoded dict of keyword arguments for the tool.
-        Example: '{"a": 10, "b": 5}'.
 
-    Returns
-    -------
-    str
-        JSON-encoded result or error message.
+@mcp.tool
+def generate_password(length: int = 16, include_symbols: bool = True) -> str:
+    """Генерация надёжного пароля"""
+    chars = string.ascii_letters + string.digits
+    if include_symbols:
+        chars += "!@#$%^&*()_+-="
+    return "".join(secrets.choice(chars) for _ in range(length))
+
+
+@mcp.tool
+def get_current_time(timezone: str = "UTC") -> str:
+    """Текущее время"""
+    now = datetime.now(ZoneInfo(timezone))
+    return now.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+@mcp.tool
+def summarize_text(text: str, max_length: int = 200) -> str:
+    """Краткое изложение текста"""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length].rsplit(" ", 1)[0] + "..."
+
+
+@mcp.tool
+def translate_text(text: str, target_lang: str = "en") -> str:
+    """Перевод текста (симуляция)"""
+    return f"[Перевод на {target_lang.upper()}]: {text}"
+
+
+@mcp.tool
+def analyze_sentiment(text: str) -> Dict:
+    """Анализ тональности"""
+    text_lower = text.lower()
+    if any(word in text_lower for word in ["отлично", "супер", "хорошо", "замечательно"]):
+        score = 0.85
+        label = "Позитивный"
+    elif any(word in text_lower for word in ["плохо", "ужасно", "ненавижу"]):
+        score = 0.25
+        label = "Негативный"
+    else:
+        score = 0.55
+        label = "Нейтральный"
+    return {"label": label, "score": score}
+
+
+# ====================== DEEPSEEK AI TOOL ======================
+
+
+@mcp.tool
+async def chat_with_deepseek(
+    prompt: str,
+    system_prompt: str = "Ты полезный AI-ассистент. Отвечай кратко и по делу.",
+    temperature: float = 0.7,
+    max_tokens: int = 1024,
+    model: str = "deepseek-chat",
+) -> Dict:
+    """
+    Отправляет запрос к DeepSeek API и возвращает ответ.
+    Требует DEEPSEEK_API_KEY в .env файле.
     """
     try:
-        args_dict = json.loads(arguments)
-        if not isinstance(args_dict, dict):
-            return json.dumps({"error": "arguments must be a JSON object"})
-    except json.JSONDecodeError as exc:
-        return json.dumps({"error": f"invalid JSON: {exc}"})
-
-    try:
-        result = await mcp._tool_manager.call_tool(name, args_dict)  # type: ignore[attr-defined]
-        return json.dumps({"result": result}, ensure_ascii=False, default=str)
-    except Exception as exc:
-        return json.dumps({"error": str(exc)}, ensure_ascii=False)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# DeepSeek orchestration — streaming agent with live stderr output
-# ═══════════════════════════════════════════════════════════════════════════
-
-DEEPSEEK_BASE = "https://api.deepseek.com/v1"
-DEEPSEEK_MODEL = "deepseek-chat"
-
-# ── ANSI helpers (stderr only) ───────────────────────────────────────────
-
-def _stderr(*args: object, **kwargs: object) -> None:
-    """Print to stderr (safe — doesn't corrupt MCP stdio protocol)."""
-    import sys
-    print(*args, file=sys.stderr, flush=True, **kwargs)
-
-_S = "\033["
-def _dim(text: str) -> str:    return f"{_S}2m{text}{_S}22m"
-def _cyan(text: str) -> str:   return f"{_S}36m{text}{_S}39m"
-def _green(text: str) -> str:  return f"{_S}32m{text}{_S}39m"
-def _yellow(text: str) -> str: return f"{_S}33m{text}{_S}39m"
-def _bold(text: str) -> str:   return f"{_S}1m{text}{_S}22m"
-
-# ── Build system prompt ──────────────────────────────────────────────────
-
-def _build_system_prompt() -> str:
-    """Build a system prompt embedding every tool's schema."""
-    tools = _tool_list()
-    # Exclude meta-tools to prevent recursion
-    exclude = {"deepseek_orchestrate", "execute_tool"}
-    tools = [t for t in tools if t["name"] not in exclude]
-    lines = [
-        "You are a meta-agent with access to the following tools:",
-    ]
-    for t in tools:
-        lines.append("")
-        lines.append(f"## {t['name']}")
-        lines.append(t["description"] or "(no description)")
-        lines.append(f"Schema: {json.dumps(t['input_schema'], ensure_ascii=False, indent=2)}")
-
-    lines.extend([
-        "",
-        "You may call these tools by responding with a JSON block on its own line:",
-        '  ```tool\n  {"name": "<tool_name>", "arguments": {…}}\n  ```',
-        "",
-        "After the tool call, the result will be sent back to you.",
-        "Continue until you have a final answer, then output it plainly.",
-    ])
-    return "\n".join(lines)
-
-
-# ── Streaming DeepSeek call ──────────────────────────────────────────────
-
-def _call_deepseek_stream(
-    api_key: str,
-    messages: list[dict[str, str]],
-    max_tokens: int = 4096,
-    temperature: float = 0.1,
-) -> tuple[str, list[dict[str, Any]]]:
-    """Call DeepSeek with streaming, printing tokens to stderr in real time.
-
-    Returns (full_text, extracted_tool_calls).
-    """
-    tool_calls: list[dict[str, Any]] = []
-    accumulated: list[str] = []
-    in_tool_block = False
-    tool_block_buf: list[str] = []
-
-    with httpx.Client(timeout=httpx.Timeout(120.0)) as client:
-        with client.stream(
-            "POST",
-            f"{DEEPSEEK_BASE}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": DEEPSEEK_MODEL,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "stream": True,
-            },
-        ) as resp:
-            resp.raise_for_status()
-            for raw_line in resp.iter_lines():
-                line = raw_line.decode() if isinstance(raw_line, bytes) else raw_line
-                if not line.startswith("data: "):
-                    continue
-                payload = line[6:].strip()
-                if payload == "[DONE]" or not payload:
-                    continue
-
-                try:
-                    event = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-
-                delta = event.get("choices", [{}])[0].get("delta", {})
-                content = delta.get("content", "")
-                if not content:
-                    continue
-
-                # Print every token to stderr
-                _stderr(content, end="")
-
-                accumulated.append(content)
-
-                # Track ```tool fences for real-time parsing
-                if "```tool" in content:
-                    in_tool_block = True
-                    tool_block_buf = [content]
-                    continue
-
-                if in_tool_block:
-                    tool_block_buf.append(content)
-                    if "```" in content.replace("```tool", "", 1) and content.strip() == "```":
-                        in_tool_block = False
-                        full_block = "".join(tool_block_buf)
-                        # Extract the JSON from inside ```tool ... ```
-                        m = re.search(r"```tool\s*\n?(.*?)```", full_block, re.DOTALL)
-                        if m:
-                            try:
-                                tc = json.loads(m.group(1).strip())
-                                if isinstance(tc, dict) and "name" in tc:
-                                    tool_calls.append(tc)
-                            except json.JSONDecodeError:
-                                pass
-                        tool_block_buf = []
-
-    _stderr()  # final newline
-    full_text = "".join(accumulated)
-
-    # Also parse the full accumulated text for any tool blocks we might have missed
-    pattern = re.compile(r"```tool\s*\n(.*?)\n```", re.DOTALL)
-    for match in pattern.finditer(full_text):
-        block = match.group(1).strip()
-        try:
-            tc = json.loads(block)
-            if isinstance(tc, dict) and "name" in tc and tc not in tool_calls:
-                tool_calls.append(tc)
-        except json.JSONDecodeError:
-            pass
-
-    return full_text, tool_calls
-
-
-@mcp.tool()
-async def deepseek_orchestrate(
-    task: str,
-    max_iterations: int = 5,
-) -> str:
-    """Let DeepSeek reason about the task and call any tool it needs.
-
-    The agent loops: it asks DeepSeek → parses tool call requests →
-    executes them → feeds results back → repeats until done.
-
-    Parameters
-    ----------
-    task : str
-        The user goal (e.g. 'reverse "hello world" and uppercase it').
-    max_iterations : int
-        Maximum tool-call rounds (default 5).
-
-    Returns
-    -------
-    str
-        The final answer from DeepSeek.
-    """
-    api_key = os.environ.get("DEEPSEEK_API_KEY")
-    if not api_key:
-        return (
-            'Error: DEEPSEEK_API_KEY environment variable not set.\n'
-            'Set it before starting the server, e.g.:\n'
-            '  DEEPSEEK_API_KEY=sk-... uv run main.py'
+        response = await deepseek.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
+        choice = response.choices[0]
+        return {
+            "status": "success",
+            "model": model,
+            "prompt": prompt,
+            "response": choice.message.content,
+            "usage": {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            },
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "model": model,
+            "prompt": prompt,
+            "error": str(e),
+        }
 
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": _build_system_prompt()},
-        {"role": "user", "content": task},
+
+# ====================== МЕТА-ИНСТРУМЕНТЫ ======================
+
+
+@mcp.tool
+async def search_tools(query: str = "", limit: int = 20) -> List[Dict]:
+    """
+    Поиск инструментов по названию или описанию.
+    Очень полезен для Claude Desktop.
+    """
+    tools = await mcp.list_tools()
+    results = []
+
+    query = query.lower().strip()
+
+    for tool in tools:
+        name_match = query in tool.name.lower()
+        desc_match = query in (tool.description or "").lower()
+
+        if not query or name_match or desc_match:
+            results.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                    "is_meta": tool.name in ["search_tools", "run_tool"],
+                }
+            )
+            if len(results) >= limit:
+                break
+
+    return results
+
+
+@mcp.tool
+async def run_tool(tool_name: str, arguments: Dict[str, Any]) -> Any:
+    """
+    Универсальный запуск любого инструмента по имени.
+    Удобно использовать из Claude Desktop.
+    """
+    try:
+        tool = await mcp.get_tool(tool_name)
+        if not tool:
+            available = [t.name for t in await mcp.list_tools()]
+            return {
+                "error": f"Инструмент '{tool_name}' не найден",
+                "available_tools": available[:15],
+            }
+
+        result = await mcp.call_tool(tool_name, arguments)
+        sc = result.structured_content
+        value = sc["result"] if isinstance(sc, dict) and "result" in sc else sc
+        return {
+            "tool": tool_name,
+            "input": arguments,
+            "result": value,
+            "status": "success",
+        }
+
+    except Exception as e:
+        return {"tool": tool_name, "status": "error", "error": str(e)}
+
+
+# ====================== ТЕСТ-РАННЕР ======================
+
+
+async def run_all_tests():
+    """Демонстрирует работу мета-инструментов: search_tools → run_tool."""
+
+    sep = "=" * 60
+    print(f"\n{sep}")
+    print("  🧪 MetaTools Pro — ТЕСТ МЕТА-ИНСТРУМЕНТОВ")
+    print(f"{sep}\n")
+
+    # ── Сценарий: пользователь ищет инструменты и запускает их ──
+
+    scenarios = [
+        {
+            "label": "🔍 Поиск калькуляторов → запуск add",
+            "search_query": "складывает",
+            "run_tool": "add",
+            "run_args": {"a": 15, "b": 27},
+        },
+        {
+            "label": "🔍 Поиск погоды → запуск get_weather",
+            "search_query": "погод",
+            "run_tool": "get_weather",
+            "run_args": {"city": "Лондон"},
+        },
+        {
+            "label": "🔍 Поиск скидок → запуск calculate_discount",
+            "search_query": "скидк",
+            "run_tool": "calculate_discount",
+            "run_args": {"price": 5000.0, "discount_percent": 20.0},
+        },
+        {
+            "label": "🔍 Поиск AI → запуск chat_with_deepseek",
+            "search_query": "deepseek",
+            "run_tool": "chat_with_deepseek",
+            "run_args": {"prompt": "Ответь одним словом: столица Франции?", "max_tokens": 30},
+        },
+        {
+            "label": "🔍 Поиск паролей → запуск generate_password",
+            "search_query": "парол",
+            "run_tool": "generate_password",
+            "run_args": {"length": 24, "include_symbols": True},
+        },
+        {
+            "label": "🔍 Поиск анализа текста → запуск analyze_sentiment",
+            "search_query": "тональност",
+            "run_tool": "analyze_sentiment",
+            "run_args": {"text": "Этот сервис просто супер!"},
+        },
     ]
 
-    for iteration in range(1, max_iterations + 1):
-        _stderr()
-        _stderr(_bold(f"─── Iteration {iteration} ──────────────────────────"))
-        _stderr()
+    passed = 0
+    failed = 0
 
-        reply, tool_calls = _call_deepseek_stream(api_key, messages)
+    for i, s in enumerate(scenarios, 1):
+        print(f"┌─ Сценарий {i}: {s['label']}")
+        print(f"│")
 
-        if not tool_calls:
-            _stderr()
-            _stderr(_green(_bold("✔ Final answer:")))
-            _stderr(reply)
-            return reply
+        # Шаг 1: search_tools
+        print(f"│  1. search_tools(\"{s['search_query']}\")")
+        try:
+            sr = await mcp.call_tool("search_tools", {"query": s["search_query"]})
+            found = sr.structured_content
+            if isinstance(found, dict) and "result" in found:
+                found = found["result"]
+            if isinstance(found, list):
+                names = [t["name"] for t in found]
+                print(f"│     Найдено: {', '.join(names)}")
+            else:
+                print(f"│     Результат: {found}")
+        except Exception as e:
+            print(f"│     ❌ search_tools упал: {e}")
+            failed += 1
+            print(f"└{'─' * 58}\n")
+            continue
 
-        # Append assistant reply
-        messages.append({"role": "assistant", "content": reply})
-
-        for tc in tool_calls:
-            name = tc["name"]
-            args = tc.get("arguments", {})
-            args_str = json.dumps(args, ensure_ascii=False)
-            _stderr()
-            _stderr(_cyan(_bold(f"→ Calling tool: {name}({args_str})")))
-
-            try:
-                result = await mcp._tool_manager.call_tool(name, args)  # type: ignore[attr-defined]
-                result_str = json.dumps({"result": result}, ensure_ascii=False, default=str)
-                _stderr(_green(f"  Result: {result_str}"))
-            except Exception as exc:
-                result_str = json.dumps({"error": str(exc)}, ensure_ascii=False)
-                _stderr(_yellow(f"  Error: {result_str}"))
-
-            messages.append({
-                "role": "user",
-                "content": f"Result of `{name}({args_str})`:\n{result_str}",
+        # Шаг 2: run_tool
+        print(f"│  2. run_tool(\"{s['run_tool']}\", {json.dumps(s['run_args'], ensure_ascii=False)})")
+        try:
+            rr = await mcp.call_tool("run_tool", {
+                "tool_name": s["run_tool"],
+                "arguments": s["run_args"],
             })
+            sc = rr.structured_content
+            value = sc["result"] if isinstance(sc, dict) and "result" in sc else sc
+            output = json.dumps(value, indent=6, ensure_ascii=False)
+            # Indent the output under the tree
+            for line in output.split("\n"):
+                print(f"│     {line}")
+            passed += 1
+        except Exception as e:
+            print(f"│     ❌ run_tool упал: {e}")
+            failed += 1
 
-    # Max iterations reached
-    _stderr()
-    _stderr(_yellow(_bold(f"⚠ Reached max_iterations ({max_iterations})")))
-    return (
-        f"Reached max_iterations ({max_iterations}).\n"
-        f"Last assistant reply:\n{messages[-1]['content']}"
-    )
+        print(f"└{'─' * 58}\n")
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    """Run via `uv run src/meta_server.py` or `python src/meta_server.py`."""
-    mcp.run()
+    print(f"{sep}")
+    print(f"  Результаты: {passed} ✓ успешно, {failed} ✗ ошибок, всего {len(scenarios)}")
+    print(f"{sep}\n")
+# ====================== ТОЧКА ВХОДА ======================
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if "--test" in sys.argv:
+        asyncio.run(run_all_tests())
+    elif "--stdio" in sys.argv:
+        # Для подключения через OMP / Claude Desktop (stdio transport)
+        mcp.run(transport="stdio", show_banner=False)
+    else:
+        print("🚀 MetaTools Pro MCP Server запущен")
+        tools = asyncio.run(mcp.list_tools())
+        print(f"Всего инструментов: {len(tools)}")
+        for t in tools:
+            print(f"  • {t.name}")
+        print("Готов к подключению в Claude Desktop...")
+        print("  Запусти с --test для мини-теста всех инструментов")
+        print("  Запусти с --stdio для OMP/Claude Desktop (stdio mode)")
+        mcp.run(transport="sse", port=8000, host="127.0.0.1")
